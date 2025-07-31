@@ -13,7 +13,7 @@ if uploaded_files:
     dfs = []
 
     for file in uploaded_files:
-        df = pd.read_csv(file)
+        df = pd.read_csv(file, encoding='utf-8', errors='replace')
         df['Date et heure'] = pd.to_datetime(df['Date et heure'], errors='coerce')
         df = df.set_index('Date et heure')
         dfs.append(df)
