@@ -102,6 +102,11 @@ import pandas as pd
 import os
 from io import BytesIO
 
+if 'df_final' in locals() and isinstance(df_final, pd.DataFrame) and not df_final.empty:
+    # bloc de traitement ou de visualisation
+else:
+    st.error("⛔ Les données n'ont pas été traitées correctement ou sont vides.")
+    
 if not df_final.empty:
     df_15min = df_final.copy()
     df_15min.index = pd.to_datetime(df_15min.index, errors='coerce')
