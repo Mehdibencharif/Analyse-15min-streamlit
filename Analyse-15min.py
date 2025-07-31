@@ -98,16 +98,11 @@ def clean_uploaded_file(uploaded_file):
 
 # === BLOC 3 : Agrégation, indicateurs et export Excel ===
 
+# === BLOC 3 : Agrégation, indicateurs et export Excel ===
 import pandas as pd
-import os
 from io import BytesIO
 
 if 'df_final' in locals() and isinstance(df_final, pd.DataFrame) and not df_final.empty:
-    # bloc de traitement ou de visualisation
-else:
-    st.error("⛔ Les données n'ont pas été traitées correctement ou sont vides.")
-    
-if not df_final.empty:
     df_15min = df_final.copy()
     df_15min.index = pd.to_datetime(df_15min.index, errors='coerce')
 
@@ -116,7 +111,7 @@ if not df_final.empty:
     if not df_15min.index.is_monotonic_increasing:
         df_15min.sort_index(inplace=True)
 
-    # --- Agrégation 15 minutes ---
+    # Agrégation 15 min
     agg_15min = df_15min.resample('15min').agg({
         'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
         'Écart au palier (kW)': 'mean',
@@ -126,7 +121,7 @@ if not df_final.empty:
                          'Écart moyen 15min', 'Facteur utilisation 15min (%)']
     agg_15min['kWh 15min'] = agg_15min['Somme Puissance 15min'] * 0.25
 
-    # --- Agrégation horaire ---
+    # Agrégation horaire
     agg_hour = df_15min.resample('h').agg({
         'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
         'Écart au palier (kW)': 'mean',
@@ -136,7 +131,7 @@ if not df_final.empty:
                         'Écart moyen heure', 'Facteur utilisation heure (%)']
     agg_hour['kWh heure'] = agg_hour['Somme Puissance heure'] * 0.25
 
-    # --- Agrégation journalière ---
+    # Agrégation journalière
     agg_day = df_15min.resample('D').agg({
         'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
         'Écart au palier (kW)': 'mean',
@@ -146,8 +141,8 @@ if not df_final.empty:
                        'Écart moyen jour', 'Facteur utilisation jour (%)']
     agg_day['kWh jour'] = agg_day['Somme Puissance jour'] * 0.25
 
-    # --- Agrégation mensuelle ---
-    agg_month = df_15min.resample('M').agg({
+    # Agrégation mensuelle
+    agg_month = df_15min.resample('ME').agg({  # ⚠️ Utilise 'ME' pour éviter le warning
         'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
         'Écart au palier (kW)': 'mean',
         'Facteur d\'utilisation (%)': 'mean'
@@ -157,7 +152,7 @@ if not df_final.empty:
     agg_month['kWh mois'] = agg_month['Somme Puissance mois'] * 0.25
     agg_month['Année'] = agg_month['Mois'].dt.year
 
-    # --- Facteur d'utilisation global ---
+    # Facteur d'utilisation global
     if (agg_month['P max mois'] > 0).all():
         agg_month['Facteur utilisation global (%)'] = (
             agg_month['kWh mois'] / (agg_month['P max mois'] * 24 * agg_month['Mois'].dt.daysinmonth)
@@ -165,12 +160,12 @@ if not df_final.empty:
     else:
         agg_month['Facteur utilisation global (%)'] = None
 
-    # --- Puissance moyenne restante ---
+    # Puissance moyenne restante
     agg_month['Puissance moyenne restante (kW)'] = (
         (1 - agg_month['Facteur utilisation mois (%)'] / 100) * agg_month['P max mois']
     )
 
-    # === Export vers Excel en mémoire (pour téléchargement Streamlit) ===
+    # Export Excel
     output_excel = BytesIO()
     with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
         agg_15min.to_excel(writer, sheet_name='Stats 15min', index=False)
@@ -181,7 +176,7 @@ if not df_final.empty:
 
     st.success("📊 Données agrégées avec succès.")
 
-    # === Bouton de téléchargement du fichier Excel ===
+    # Téléchargement du fichier Excel
     st.download_button(
         label="📥 Télécharger le fichier Excel",
         data=output_excel.getvalue(),
@@ -190,7 +185,8 @@ if not df_final.empty:
     )
 
 else:
-    st.error("⛔ `df_final` est vide. Aucune agrégation possible.")
+    st.error("⛔ `df_final` est vide ou non défini. Aucune agrégation possible.")
+    
 # === BLOC 4 : Visualisations graphiques ===
 
 import matplotlib.pyplot as plt
