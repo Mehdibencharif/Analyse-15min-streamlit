@@ -22,13 +22,21 @@ if uploaded_files:
                 decoded = content.decode("ISO-8859-1")
 
             df = pd.read_csv(io.StringIO(decoded))
-
+            df.columns = df.columns.str.strip()  # Enlève les espaces avant/après
             # Nettoyage et validation de la structure
             if 'Date et heure' not in df.columns:
                 st.warning(f"⛔ Le fichier **{file.name}** ne contient pas la colonne 'Date et heure'. Ignoré.")
                 continue
 
-            df['Date et heure'] = pd.to_datetime(df['Date et heure'], errors='coerce')
+          # Identifier dynamiquement la colonne de date
+date_col = next((col for col in df.columns if 'date' in col.lower()), None)
+
+if date_col:
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df = df.set_index(date_col)
+    dfs.append(df)
+else:
+    st.warning(f"⚠️ Le fichier {file.name} ne contient pas de colonne 'Date'. Ignoré.")
             df.dropna(subset=['Date et heure'], inplace=True)
             df = df.set_index('Date et heure')
             dfs.append(df)
