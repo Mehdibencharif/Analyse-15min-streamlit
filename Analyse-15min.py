@@ -37,7 +37,7 @@ if uploaded_files:
         st.success(f"{len(uploaded_files)} fichiers fusionnés. {len(df_final)} lignes au total.")
         st.dataframe(df_final.head())
     else:
-        st.error("Aucun fichier valide n’a pu être traité."
+        st.error("Aucun fichier valide n’a pu être traité.")
 
 
     # Analyse rapide
