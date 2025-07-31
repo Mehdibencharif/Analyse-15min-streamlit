@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import io
 st.title("Analyse de données Hydro-Québec – 15 min")
 
 # 📁 Téléversement de fichiers multiples
