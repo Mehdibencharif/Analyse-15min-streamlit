@@ -186,3 +186,46 @@ if not df_final.empty:
 
 else:
     st.error("⛔ `df_final` est vide. Aucune agrégation possible.")
+# === BLOC 4 : Visualisations graphiques ===
+
+import matplotlib.pyplot as plt
+
+# 📈 Évolution journalière de la puissance
+st.subheader("📅 Puissance journalière – Courbe de charge")
+
+fig1, ax1 = plt.subplots(figsize=(10, 4))
+ax1.plot(agg_day['Date'], agg_day['P moy jour'], label='Puissance moyenne', color='blue')
+ax1.plot(agg_day['Date'], agg_day['P max jour'], label='Puissance maximale', linestyle='--', color='red')
+ax1.set_title("Évolution journalière de la puissance")
+ax1.set_ylabel("Puissance (kW)")
+ax1.set_xlabel("Date")
+ax1.legend()
+ax1.grid(True)
+st.pyplot(fig1)
+
+# 📊 Répartition mensuelle – kWh/mois
+st.subheader("📆 Répartition mensuelle – Consommation énergétique (kWh)")
+
+fig2, ax2 = plt.subplots(figsize=(10, 4))
+ax2.bar(agg_month['Mois'].dt.strftime('%Y-%m'), agg_month['kWh mois'], color='green')
+ax2.set_title("Consommation énergétique mensuelle")
+ax2.set_ylabel("Énergie (kWh)")
+ax2.set_xlabel("Mois")
+plt.xticks(rotation=45)
+st.pyplot(fig2)
+
+# 📉 Facteur d'utilisation mensuel
+st.subheader("📊 Facteur d'utilisation – Mensuel")
+
+fig3, ax3 = plt.subplots(figsize=(10, 4))
+ax3.plot(agg_month['Mois'].dt.strftime('%Y-%m'), agg_month["Facteur utilisation mois (%)"], marker='o', label='Mensuel', color='orange')
+ax3.plot(agg_month['Mois'].dt.strftime('%Y-%m'), agg_month["Facteur utilisation global (%)"], marker='s', label='Global', linestyle='--', color='purple')
+ax3.set_title("Facteur d'utilisation mensuel et global")
+ax3.set_ylabel("Facteur (%)")
+ax3.set_xlabel("Mois")
+ax3.legend()
+plt.xticks(rotation=45)
+ax3.grid(True)
+st.pyplot(fig3)
+
+
