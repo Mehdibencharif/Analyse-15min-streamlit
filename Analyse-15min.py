@@ -2,53 +2,45 @@ import streamlit as st
 import pandas as pd
 import io
 
-# Titre principal
-st.title("🔍 Analyse des données Hydro-Québec – Intervalles de 15 minutes")
+st.title("Analyse de données Hydro-Québec – 15 min")
 
-# Section : Téléversement de fichiers
-st.header("📁 Importer vos fichiers (12 mois, 15 min)")
-uploaded_files = st.file_uploader("Sélectionnez un ou plusieurs fichiers CSV", type=["csv"], accept_multiple_files=True)
+# 📁 Téléversement de fichiers
+uploaded_files = st.file_uploader("Importer vos fichiers (12 mois, 15 min)", type="csv", accept_multiple_files=True)
 
-# Traitement des fichiers
 if uploaded_files:
     dfs = []
+
     for file in uploaded_files:
         try:
-            # Décodage avec gestion d’erreurs
+            # Lire le fichier avec gestion des encodages
             content = file.getvalue()
             try:
-                decoded = content.decode("utf-8")
+                df = pd.read_csv(io.StringIO(content.decode('utf-8')))
             except UnicodeDecodeError:
-                decoded = content.decode("ISO-8859-1")
+                df = pd.read_csv(io.StringIO(content.decode('ISO-8859-1')))
 
-            df = pd.read_csv(io.StringIO(decoded))
-            df.columns = df.columns.str.strip()  # Enlève les espaces avant/après
-            # Nettoyage et validation de la structure
-            if 'Date et heure' not in df.columns:
-                st.warning(f"⛔ Le fichier **{file.name}** ne contient pas la colonne 'Date et heure'. Ignoré.")
-                continue
+            # Nettoyer les noms de colonnes
+            df.columns = df.columns.str.strip()
 
-          # Identifier dynamiquement la colonne de date
-date_col = next((col for col in df.columns if 'date' in col.lower()), None)
+            # 🔍 Afficher les colonnes disponibles (pour debug)
+            st.write(f"📄 Colonnes dans {file.name} :", df.columns.tolist())
 
-if date_col:
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-    df = df.set_index(date_col)
-    dfs.append(df)
-else:
-    st.warning(f"⚠️ Le fichier {file.name} ne contient pas de colonne 'Date'. Ignoré.")
-            df.dropna(subset=['Date et heure'], inplace=True)
-            df = df.set_index('Date et heure')
-            dfs.append(df)
+            # Trouver dynamiquement la colonne de date
+            date_col = next((col for col in df.columns if 'date' in col.lower()), None)
 
+            if date_col:
+                df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+                df = df.set_index(date_col)
+                dfs.append(df)
+            else:
+                st.warning(f"⚠️ Le fichier {file.name} ne contient pas de colonne de date identifiable. Ignoré.")
         except Exception as e:
-            st.error(f"Erreur lors du traitement du fichier **{file.name}** : {e}")
+            st.error(f"❌ Erreur lors du traitement de {file.name} : {e}")
 
-    # Fusion et affichage
     if dfs:
         df_final = pd.concat(dfs).sort_index()
-        df_final = df_final[~df_final.index.duplicated(keep='first')]  # suppression des doublons temporels
-        st.success(f"✅ {len(uploaded_files)} fichiers fusionnés avec succès ({len(df_final)} lignes).")
-        st.dataframe(df_final.head(100))
+        df_final = df_final[~df_final.index.duplicated(keep='first')]
+        st.success(f"✅ {len(uploaded_files)} fichiers fusionnés – {len(df_final)} lignes totales.")
+        st.dataframe(df_final.head())
     else:
-        st.error("❌ Aucun fichier valide n’a été chargé.")
+        st.error("🚫 Aucun fichier valide n’a été chargé.")
