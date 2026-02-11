@@ -1,222 +1,293 @@
-import os
+import io
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime
-import io
 import streamlit as st
 
-import streamlit as st
-import pandas as pd
-
-# Configuration de la page pour une meilleure lisibilité
+# ----------------------------
+# CONFIG
+# ----------------------------
 st.set_page_config(layout="wide")
-st.title("🔎 Analyse de puissance - Données Hydro-Québec (15 min ou journalières)")
+st.title("🔎 Analyse Hydro-Québec — Profil 15 min (12 mois)")
 
-# 📂 Téléversement des fichiers CSV ou Excel
+# ----------------------------
+# UPLOAD
+# ----------------------------
 uploaded_files = st.file_uploader(
-    "Importez vos fichiers de consommation (formats acceptés : CSV ou Excel)",
+    "Importez vos fichiers Hydro (CSV ou Excel). Idéalement 15 min. (Vous pouvez en mettre plusieurs)",
     type=["csv", "xlsx"],
     accept_multiple_files=True
 )
 
-# 📋 Vérification et affichage des fichiers importés
-if uploaded_files:
-    st.success(f"{len(uploaded_files)} fichier(s) téléchargé(s) avec succès :")
-    for file in uploaded_files:
-        st.markdown(f"- `{file.name}`")
-else:
+if not uploaded_files:
     st.warning("⚠️ Veuillez importer au moins un fichier pour démarrer l’analyse.")
     st.stop()
 
+st.success(f"{len(uploaded_files)} fichier(s) téléchargé(s) :")
+for f in uploaded_files:
+    st.markdown(f"- `{f.name}`")
 
-### Bloc 2 Nettoyage et harmonisation des fichiers #####
-from datetime import datetime
-import os
-
-def clean_uploaded_file(uploaded_file):
+# ----------------------------
+# CLEANING
+# ----------------------------
+def clean_uploaded_file(uploaded_file) -> pd.DataFrame | None:
+    """
+    Retourne un DF avec:
+    - Date et heure (datetime)
+    - kW (float)
+    - Nom fichier
+    """
     try:
         file_name = uploaded_file.name
+        name_low = file_name.lower()
         st.write(f"📄 Traitement : `{file_name}`")
 
-        # Lecture du fichier selon extension
-        if file_name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file, encoding='ISO-8859-1', sep=';')
+        # Lecture
+        if name_low.endswith(".csv"):
+            df = pd.read_csv(uploaded_file, encoding="ISO-8859-1", sep=";")
         else:
             df = pd.read_excel(uploaded_file)
 
-        # Détection du type de fichier
-        if "15min" in file_name.lower():
-            date_col = 'Date et heure'
-        elif "jour" in file_name.lower():
-            date_col = 'Date'
-        else:
-            st.warning(f"❌ Format non reconnu dans le nom de fichier : `{file_name}`")
+        # Détection colonne date
+        # (Ne te bloque pas sur le nom du fichier; on check aussi les colonnes)
+        date_col = None
+        if "Date et heure" in df.columns:
+            date_col = "Date et heure"
+        elif "Date" in df.columns:
+            date_col = "Date"
+
+        if date_col is None:
+            st.warning(f"⚠️ Colonne date introuvable dans `{file_name}` (attendu: 'Date et heure' ou 'Date').")
             return None
 
-        # Harmonisation des noms
-        if 'Puissance réelle (kW)' not in df.columns:
+        # Détection colonne puissance
+        p_col = None
+        if "Puissance réelle (kW)" in df.columns:
+            p_col = "Puissance réelle (kW)"
+        else:
             for col in df.columns:
-                if 'puissance' in col.lower() and 'kW' in col:
-                    df.rename(columns={col: 'Puissance réelle (kW)'}, inplace=True)
+                c = col.lower()
+                if ("puissance" in c) and ("kw" in c):
+                    p_col = col
                     break
 
-        # Vérification des colonnes essentielles
-        if date_col not in df.columns or 'Puissance réelle (kW)' not in df.columns:
-            st.warning(f"⚠️ Colonnes essentielles manquantes dans : `{file_name}`")
+        if p_col is None:
+            st.warning(f"⚠️ Colonne puissance introuvable dans `{file_name}`.")
             return None
 
-        # Nettoyage
-        df['Puissance réelle (kW)'] = (
-            df['Puissance réelle (kW)'].astype(str).str.replace(' ', '').str.replace(',', '.')
+        # Nettoyage puissance
+        df[p_col] = (
+            df[p_col].astype(str)
+            .str.replace(" ", "", regex=False)
+            .str.replace(",", ".", regex=False)
         )
-        df['Puissance réelle (kW)'] = pd.to_numeric(df['Puissance réelle (kW)'], errors='coerce')
-        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df[p_col] = pd.to_numeric(df[p_col], errors="coerce")
 
-        df = df[[date_col, 'Puissance réelle (kW)']].dropna().drop_duplicates(subset=[date_col])
-        df.rename(columns={date_col: 'Date et heure'}, inplace=True)
-        df['Nom fichier'] = file_name
+        # Date -> datetime
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 
-        # Calcul du palier dynamique
-        p_max = df['Puissance réelle (kW)'].max()
-        if p_max <= 500:
-            palier = 500
-        elif p_max <= 700:
-            palier = 700
-        elif p_max <= 1000:
-            palier = 1000
-        else:
-            palier = (int(p_max // 100) + 1) * 100
-
-        df['Écart au palier (kW)'] = (palier - df['Puissance réelle (kW)']).clip(lower=0)
-        df["Facteur d'utilisation (%)"] = df['Puissance réelle (kW)'] / palier * 100
+        df = df[[date_col, p_col]].dropna().drop_duplicates(subset=[date_col]).copy()
+        df.rename(columns={date_col: "Date et heure", p_col: "kW"}, inplace=True)
+        df["Nom fichier"] = file_name
 
         return df
 
     except Exception as e:
-        st.error(f"❌ Erreur dans le fichier `{uploaded_file.name}` : {str(e)}")
+        st.error(f"❌ Erreur dans `{uploaded_file.name}` : {e}")
         return None
 
-# === BLOC 3 : Agrégation, indicateurs et export Excel ===
 
-# === BLOC 3 : Agrégation, indicateurs et export Excel ===
-import pandas as pd
-from io import BytesIO
+cleaned_list = []
+for uf in uploaded_files:
+    out = clean_uploaded_file(uf)
+    if out is not None and not out.empty:
+        cleaned_list.append(out)
 
-if 'df_final' in locals() and isinstance(df_final, pd.DataFrame) and not df_final.empty:
-    df_15min = df_final.copy()
-    df_15min.index = pd.to_datetime(df_15min.index, errors='coerce')
+if not cleaned_list:
+    st.error("⛔ Aucun fichier valide après nettoyage.")
+    st.stop()
 
-    if df_15min.index.tz is not None:
-        df_15min = df_15min.tz_convert(None)
-    if not df_15min.index.is_monotonic_increasing:
-        df_15min.sort_index(inplace=True)
+df_final = pd.concat(cleaned_list, ignore_index=True)
+df_final["Date et heure"] = pd.to_datetime(df_final["Date et heure"], errors="coerce")
+df_final = df_final.dropna(subset=["Date et heure", "kW"])
+df_final = df_final.drop_duplicates(subset=["Date et heure"])
+df_final = df_final.sort_values("Date et heure")
+df_final = df_final.set_index("Date et heure")
 
-    # Agrégation 15 min
-    agg_15min = df_15min.resample('15min').agg({
-        'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
-        'Écart au palier (kW)': 'mean',
-        'Facteur d\'utilisation (%)': 'mean'
-    }).reset_index()
-    agg_15min.columns = ['Date et heure', 'P max 15min', 'P min 15min', 'P moy 15min', 'Somme Puissance 15min',
-                         'Écart moyen 15min', 'Facteur utilisation 15min (%)']
-    agg_15min['kWh 15min'] = agg_15min['Somme Puissance 15min'] * 0.25
+# Assurer index naïf (sans timezone)
+if df_final.index.tz is not None:
+    df_final = df_final.tz_convert(None)
 
-    # Agrégation horaire
-    agg_hour = df_15min.resample('h').agg({
-        'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
-        'Écart au palier (kW)': 'mean',
-        'Facteur d\'utilisation (%)': 'mean'
-    }).reset_index()
-    agg_hour.columns = ['Date et heure', 'P max heure', 'P min heure', 'P moy heure', 'Somme Puissance heure',
-                        'Écart moyen heure', 'Facteur utilisation heure (%)']
-    agg_hour['kWh heure'] = agg_hour['Somme Puissance heure'] * 0.25
+st.info(f"📈 Plage temporelle : {df_final.index.min()} → {df_final.index.max()} | Lignes: {len(df_final):,}")
 
-    # Agrégation journalière
-    agg_day = df_15min.resample('D').agg({
-        'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
-        'Écart au palier (kW)': 'mean',
-        'Facteur d\'utilisation (%)': 'mean'
-    }).reset_index()
-    agg_day.columns = ['Date', 'P max jour', 'P min jour', 'P moy jour', 'Somme Puissance jour',
-                       'Écart moyen jour', 'Facteur utilisation jour (%)']
-    agg_day['kWh jour'] = agg_day['Somme Puissance jour'] * 0.25
+# ----------------------------
+# PARAMS KPI
+# ----------------------------
+st.subheader("⚙️ Paramètres")
+cA, cB, cC = st.columns([1, 1, 2])
 
-    # Agrégation mensuelle
-    agg_month = df_15min.resample('ME').agg({  # ⚠️ Utilise 'ME' pour éviter le warning
-        'Puissance réelle (kW)': ['max', 'min', 'mean', 'sum'],
-        'Écart au palier (kW)': 'mean',
-        'Facteur d\'utilisation (%)': 'mean'
-    }).reset_index()
-    agg_month.columns = ['Mois', 'P max mois', 'P min mois', 'P moy mois', 'Somme Puissance mois',
-                         'Écart moyen mois', 'Facteur utilisation mois (%)']
-    agg_month['kWh mois'] = agg_month['Somme Puissance mois'] * 0.25
-    agg_month['Année'] = agg_month['Mois'].dt.year
+with cA:
+    palier_mode = st.selectbox("Palier pour facteur d’utilisation", ["Auto (basé sur la pointe)", "Manuel"], index=0)
+with cB:
+    palier_manual = st.number_input("Palier (kW)", min_value=0.0, value=700.0, step=50.0, disabled=(palier_mode != "Manuel"))
+with cC:
+    shave_ratio = st.slider("Seuil écrêtage batterie (% de la pointe)", min_value=50, max_value=95, value=90, step=5)
 
-    # Facteur d'utilisation global
-    if (agg_month['P max mois'] > 0).all():
-        agg_month['Facteur utilisation global (%)'] = (
-            agg_month['kWh mois'] / (agg_month['P max mois'] * 24 * agg_month['Mois'].dt.daysinmonth)
-        ) * 100
-    else:
-        agg_month['Facteur utilisation global (%)'] = None
+# ----------------------------
+# CALCULS ROBUSTES
+# ----------------------------
+df = df_final.copy()
 
-    # Puissance moyenne restante
-    agg_month['Puissance moyenne restante (kW)'] = (
-        (1 - agg_month['Facteur utilisation mois (%)'] / 100) * agg_month['P max mois']
-    )
+# kWh sur 15 minutes (fondamental)
+df["kWh_15min"] = df["kW"] * 0.25
 
-    # Export Excel
-    output_excel = BytesIO()
-    with pd.ExcelWriter(output_excel, engine='xlsxwriter') as writer:
-        agg_15min.to_excel(writer, sheet_name='Stats 15min', index=False)
-        agg_hour.to_excel(writer, sheet_name='Stats Heure', index=False)
-        agg_day.to_excel(writer, sheet_name='Stats Jour', index=False)
-        agg_month.to_excel(writer, sheet_name='Stats Mois', index=False)
-        df_final.reset_index().to_excel(writer, sheet_name='Données Nettoyées', index=False)
+peak_kw = float(df["kW"].max())
+peak_ts = df["kW"].idxmax()
 
-    st.success("📊 Données agrégées avec succès.")
-
-    # Téléchargement du fichier Excel
-    st.download_button(
-        label="📥 Télécharger le fichier Excel",
-        data=output_excel.getvalue(),
-        file_name="Synthese_Efficacite_Energetique.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
+# Palier
+if palier_mode == "Manuel":
+    palier_kw = float(palier_manual)
 else:
-    st.error("⛔ `df_final` est vide ou non défini. Aucune agrégation possible.")
-    
-# === BLOC 4 : Visualisations graphiques ===
-import matplotlib.pyplot as plt
+    palier_kw = float(np.ceil(peak_kw / 100) * 100)
 
-st.header("📈 Visualisation des données agrégées")
+# Durée totale (heures) pour facteur global
+hours_total = (df.index.max() - df.index.min()).total_seconds() / 3600
+fu_pct = float((df["kWh_15min"].sum() / (palier_kw * hours_total)) * 100) if hours_total > 0 else np.nan
 
-# --- Graphique 1 : Puissance moyenne journalière
-if 'agg_day' in locals() and not agg_day.empty:
-    fig1, ax1 = plt.subplots(figsize=(10, 5))
-    ax1.plot(agg_day['Date'], agg_day['P moy jour'], label='Puissance moyenne', color='blue')
-    ax1.set_ylabel("Puissance (kW)")
-    ax1.set_xlabel("Date")
-    ax1.set_title("Puissance moyenne journalière")
-    ax1.legend()
-    ax1.grid(True)
-    st.pyplot(fig1)
-else:
-    st.warning("Aucune donnée journalière disponible pour afficher le graphique de puissance moyenne.")
+annual_mwh = float(df["kWh_15min"].sum() / 1000)
 
-# --- Graphique 2 : Facteur d’utilisation mensuel
-if 'agg_month' in locals() and not agg_month.empty:
-    fig2, ax2 = plt.subplots(figsize=(10, 5))
-    ax2.bar(agg_month['Mois'].dt.strftime('%Y-%m'), agg_month['Facteur utilisation mois (%)'], color='green')
-    ax2.set_ylabel("Facteur d'utilisation (%)")
-    ax2.set_xlabel("Mois")
-    ax2.set_title("Facteur d'utilisation mensuel")
-    plt.xticks(rotation=45)
-    ax2.grid(True)
-    st.pyplot(fig2)
-else:
-    st.warning("Aucune donnée mensuelle disponible pour afficher le graphique de facteur d’utilisation.")
+# Potentiel batterie (simple indicateur)
+shave_level = (shave_ratio / 100.0) * peak_kw
+df["kW_ecretable"] = (df["kW"] - shave_level).clip(lower=0)
+ecretable_kwh = float((df["kW_ecretable"] * 0.25).sum())
+ecretable_kw_peak = float(df["kW_ecretable"].max())
 
+# Agrégations correctes (à partir de kWh)
+agg_15min = pd.DataFrame({
+    "kW": df["kW"].resample("15min").mean(),
+    "kWh": df["kWh_15min"].resample("15min").sum(),
+    "kW_max": df["kW"].resample("15min").max(),
+}).reset_index()
 
+agg_hour = pd.DataFrame({
+    "kWh": df["kWh_15min"].resample("H").sum(),
+    "kW_max": df["kW"].resample("H").max(),
+    "kW_moy": df["kW"].resample("H").mean(),
+}).reset_index()
 
+agg_day = pd.DataFrame({
+    "kWh": df["kWh_15min"].resample("D").sum(),
+    "kW_max": df["kW"].resample("D").max(),
+    "kW_moy": df["kW"].resample("D").mean(),
+}).reset_index()
+
+agg_month = pd.DataFrame({
+    "kWh": df["kWh_15min"].resample("ME").sum(),
+    "kW_max": df["kW"].resample("ME").max(),
+    "kW_moy": df["kW"].resample("ME").mean(),
+}).reset_index()
+
+# Facteur d’utilisation mensuel (défendable) = kWh / (kW_max * heures du mois)
+agg_month["Mois"] = pd.to_datetime(agg_month["Date et heure"])
+agg_month["heures_mois"] = agg_month["Mois"].dt.daysinmonth * 24
+agg_month["Facteur utilisation mois (%)"] = np.where(
+    agg_month["kW_max"] > 0,
+    (agg_month["kWh"] / (agg_month["kW_max"] * agg_month["heures_mois"])) * 100,
+    np.nan
+)
+agg_month["Mois_str"] = agg_month["Mois"].dt.strftime("%Y-%m")
+agg_month = agg_month.drop(columns=["heures_mois"])
+
+# Profil horaire moyen
+df_hour_profile = df.copy()
+df_hour_profile["Heure"] = df_hour_profile.index.hour
+hour_profile = df_hour_profile.groupby("Heure")["kW"].mean()
+
+# ----------------------------
+# DASHBOARD (visuel type capture)
+# ----------------------------
+st.subheader("📌 Tableau de bord")
+
+k1, k2, k3, k4 = st.columns(4)
+
+with k1:
+    st.metric("APPEL DE POINTE", f"{peak_kw:,.1f} kW", help=f"Date/heure: {peak_ts}")
+with k2:
+    st.metric("FACTEUR D'UTILISATION", f"{fu_pct:.1f} %", help=f"Palier utilisé: {palier_kw:,.0f} kW")
+with k3:
+    st.metric("CONSOMMATION (PÉRIODE)", f"{annual_mwh:,.1f} MWh")
+with k4:
+    pot = "Faible"
+    if ecretable_kwh > 5_000:
+        pot = "Moyen"
+    if ecretable_kwh > 20_000:
+        pot = "Haut"
+    st.metric("POTENTIEL BATTERIE", pot, help=f"Énergie écrêtable: {ecretable_kwh:,.0f} kWh | Pic écrêtable: {ecretable_kw_peak:,.1f} kW")
+
+left, right = st.columns(2)
+
+with left:
+    st.markdown("### Consommation et Pointes par Mois")
+    # Bar = énergie, line = pointe
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    ax1.bar(agg_month["Mois_str"], agg_month["kWh"])
+    ax1.set_ylabel("Énergie (kWh)")
+    ax1.set_xlabel("Mois")
+    ax1.tick_params(axis='x', rotation=45)
+    ax1.grid(True, axis="y", alpha=0.3)
+
+    ax2 = ax1.twinx()
+    ax2.plot(agg_month["Mois_str"], agg_month["kW_max"], marker="o")
+    ax2.set_ylabel("Appel (kW)")
+
+    plt.tight_layout()
+    st.pyplot(fig)
+
+with right:
+    st.markdown("### Profil de Charge Horaire Moyen")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(hour_profile.index, hour_profile.values, marker="o")
+    ax.set_xlabel("Heure")
+    ax.set_ylabel("Puissance (kW)")
+    ax.set_xticks(range(0, 24))
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    st.pyplot(fig)
+
+# ----------------------------
+# EXPORT EXCEL (lien Streamlit)
+# ----------------------------
+st.subheader("⬇️ Export")
+
+excel_buffer = io.BytesIO()
+with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
+    df.reset_index().to_excel(writer, sheet_name="Données 15min", index=False)
+    agg_15min.to_excel(writer, sheet_name="Stats 15min", index=False)
+    agg_hour.to_excel(writer, sheet_name="Stats Heure", index=False)
+    agg_day.to_excel(writer, sheet_name="Stats Jour", index=False)
+    agg_month[["Mois_str", "kWh", "kW_max", "kW_moy", "Facteur utilisation mois (%)"]].to_excel(writer, sheet_name="Stats Mois", index=False)
+
+    kpi_df = pd.DataFrame([{
+        "Pointe (kW)": peak_kw,
+        "Date/heure pointe": str(peak_ts),
+        "Palier (kW)": palier_kw,
+        "Facteur d'utilisation global (%)": fu_pct,
+        "Conso période (MWh)": annual_mwh,
+        f"Seuil écrêtage ({shave_ratio}% pointe) (kW)": shave_level,
+        "Énergie écrêtable (kWh)": ecretable_kwh,
+        "Pic écrêtable (kW)": ecretable_kw_peak,
+    }])
+    kpi_df.to_excel(writer, sheet_name="KPI", index=False)
+
+excel_buffer.seek(0)
+
+st.download_button(
+    label="📥 Télécharger la synthèse Excel",
+    data=excel_buffer.getvalue(),
+    file_name="Synthese_Hydro_15min.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+# (Optionnel) aperçu tableau
+with st.expander("🔍 Aperçu des données mensuelles"):
+    st.dataframe(agg_month[["Mois_str", "kWh", "kW_max", "Facteur utilisation mois (%)"]], use_container_width=True)
