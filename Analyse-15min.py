@@ -30,52 +30,84 @@ for f in uploaded_files:
 # ----------------------------
 # CLEANING
 # ----------------------------
-def clean_uploaded_file(uploaded_file) -> pd.DataFrame | None:
-    """
-    Retourne un DF avec:
-    - Date et heure (datetime)
-    - kW (float)
-    - Nom fichier
-    """
+import unicodedata
+import re
+import pandas as pd
+import streamlit as st
+
+def _norm(s: str) -> str:
+    s = str(s).strip()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"\s+", " ", s)
+    return s.lower()
+
+def clean_uploaded_file(uploaded_file):
     try:
         file_name = uploaded_file.name
-        name_low = file_name.lower()
         st.write(f"📄 Traitement : `{file_name}`")
 
         # Lecture
-        if name_low.endswith(".csv"):
+        if file_name.lower().endswith(".csv"):
             df = pd.read_csv(uploaded_file, encoding="ISO-8859-1", sep=";")
         else:
             df = pd.read_excel(uploaded_file)
 
-        # Détection colonne date
-        # (Ne te bloque pas sur le nom du fichier; on check aussi les colonnes)
+        # --- Normaliser les noms de colonnes
+        col_map = {c: _norm(c) for c in df.columns}
+        inv_map = {v: k for k, v in col_map.items()}  # norm -> original
+
+        # Affiche colonnes (utile au debug)
+        st.caption(f"Colonnes: {list(df.columns)}")
+
+        # --- Détecter colonne date
+        date_candidates = []
+        for c in df.columns:
+            cn = _norm(c)
+            if ("date" in cn) or ("heure" in cn) or ("horodate" in cn) or ("timestamp" in cn) or ("periode" in cn):
+                date_candidates.append(c)
+
         date_col = None
-        if "Date et heure" in df.columns:
-            date_col = "Date et heure"
-        elif "Date" in df.columns:
-            date_col = "Date"
+        # Priorité à une colonne qui contient date+heure
+        for c in date_candidates:
+            cn = _norm(c)
+            if ("heure" in cn) or ("horodate" in cn) or ("timestamp" in cn) or ("date et heure" in cn):
+                date_col = c
+                break
+        if date_col is None and date_candidates:
+            date_col = date_candidates[0]
 
-        if date_col is None:
-            st.warning(f"⚠️ Colonne date introuvable dans `{file_name}` (attendu: 'Date et heure' ou 'Date').")
-            return None
+        # --- Détecter colonne puissance kW
+        p_candidates = []
+        for c in df.columns:
+            cn = _norm(c)
+            if ("kw" in cn) and ("puissance" in cn or "power" in cn or "appel" in cn or "demande" in cn):
+                p_candidates.append(c)
 
-        # Détection colonne puissance
         p_col = None
-        if "Puissance réelle (kW)" in df.columns:
-            p_col = "Puissance réelle (kW)"
+        if p_candidates:
+            # prioriser "reelle"
+            for c in p_candidates:
+                if "reel" in _norm(c) or "reelle" in _norm(c):
+                    p_col = c
+                    break
+            if p_col is None:
+                p_col = p_candidates[0]
         else:
-            for col in df.columns:
-                c = col.lower()
-                if ("puissance" in c) and ("kw" in c):
-                    p_col = col
+            # fallback : toute colonne qui contient "kw"
+            for c in df.columns:
+                if "kw" in _norm(c):
+                    p_col = c
                     break
 
-        if p_col is None:
-            st.warning(f"⚠️ Colonne puissance introuvable dans `{file_name}`.")
-            return None
+        # --- Fallback UI si détection échoue
+        if date_col is None or p_col is None:
+            st.warning(f"⚠️ Détection automatique impossible pour `{file_name}`. Choisis les colonnes manuellement :")
+            date_col = st.selectbox(f"Colonne DATE pour {file_name}", options=list(df.columns), key=f"date_{file_name}")
+            p_col = st.selectbox(f"Colonne PUISSANCE (kW) pour {file_name}", options=list(df.columns), key=f"p_{file_name}")
 
-        # Nettoyage puissance
+        # --- Nettoyage valeurs
+        df = df[[date_col, p_col]].copy()
+
         df[p_col] = (
             df[p_col].astype(str)
             .str.replace(" ", "", regex=False)
@@ -83,55 +115,31 @@ def clean_uploaded_file(uploaded_file) -> pd.DataFrame | None:
         )
         df[p_col] = pd.to_numeric(df[p_col], errors="coerce")
 
-        # Date -> datetime
         df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 
-        df = df[[date_col, p_col]].dropna().drop_duplicates(subset=[date_col]).copy()
-        df.rename(columns={date_col: "Date et heure", p_col: "kW"}, inplace=True)
+        df = df.dropna().drop_duplicates(subset=[date_col])
+        df.rename(columns={date_col: "Date et heure", p_col: "Puissance réelle (kW)"}, inplace=True)
         df["Nom fichier"] = file_name
+
+        # Calcul palier
+        p_max = df["Puissance réelle (kW)"].max()
+        if p_max <= 500:
+            palier = 500
+        elif p_max <= 700:
+            palier = 700
+        elif p_max <= 1000:
+            palier = 1000
+        else:
+            palier = (int(p_max // 100) + 1) * 100
+
+        df["Écart au palier (kW)"] = (palier - df["Puissance réelle (kW)"]).clip(lower=0)
+        df["Facteur d'utilisation (%)"] = df["Puissance réelle (kW)"] / palier * 100
 
         return df
 
     except Exception as e:
-        st.error(f"❌ Erreur dans `{uploaded_file.name}` : {e}")
+        st.error(f"❌ Erreur dans le fichier `{uploaded_file.name}` : {str(e)}")
         return None
-
-
-cleaned_list = []
-for uf in uploaded_files:
-    out = clean_uploaded_file(uf)
-    if out is not None and not out.empty:
-        cleaned_list.append(out)
-
-if not cleaned_list:
-    st.error("⛔ Aucun fichier valide après nettoyage.")
-    st.stop()
-
-df_final = pd.concat(cleaned_list, ignore_index=True)
-df_final["Date et heure"] = pd.to_datetime(df_final["Date et heure"], errors="coerce")
-df_final = df_final.dropna(subset=["Date et heure", "kW"])
-df_final = df_final.drop_duplicates(subset=["Date et heure"])
-df_final = df_final.sort_values("Date et heure")
-df_final = df_final.set_index("Date et heure")
-
-# Assurer index naïf (sans timezone)
-if df_final.index.tz is not None:
-    df_final = df_final.tz_convert(None)
-
-st.info(f"📈 Plage temporelle : {df_final.index.min()} → {df_final.index.max()} | Lignes: {len(df_final):,}")
-
-# ----------------------------
-# PARAMS KPI
-# ----------------------------
-st.subheader("⚙️ Paramètres")
-cA, cB, cC = st.columns([1, 1, 2])
-
-with cA:
-    palier_mode = st.selectbox("Palier pour facteur d’utilisation", ["Auto (basé sur la pointe)", "Manuel"], index=0)
-with cB:
-    palier_manual = st.number_input("Palier (kW)", min_value=0.0, value=700.0, step=50.0, disabled=(palier_mode != "Manuel"))
-with cC:
-    shave_ratio = st.slider("Seuil écrêtage batterie (% de la pointe)", min_value=50, max_value=95, value=90, step=5)
 
 # ----------------------------
 # CALCULS ROBUSTES
@@ -291,3 +299,4 @@ st.download_button(
 # (Optionnel) aperçu tableau
 with st.expander("🔍 Aperçu des données mensuelles"):
     st.dataframe(agg_month[["Mois_str", "kWh", "kW_max", "Facteur utilisation mois (%)"]], use_container_width=True)
+
