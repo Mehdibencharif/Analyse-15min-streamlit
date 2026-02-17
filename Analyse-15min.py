@@ -228,19 +228,21 @@ with right:
     st.pyplot(fig)
 
 # =========================
-# EXPORT EXCEL
+# EXPORT EXCEL (openpyxl)
 # =========================
 st.subheader("⬇️ Export Excel")
+
 excel_buffer = io.BytesIO()
-with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
-    df_final.reset_index().to_excel(writer, sheet_name="Données nettoyées", index=False)
-    mon.reset_index().to_excel(writer, sheet_name="Stats Mois", index=False)
+
+with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+    df_final.reset_index().to_excel(writer, sheet_name="Donnees_nettoyees", index=False)
+    mon.reset_index().to_excel(writer, sheet_name="Stats_Mois", index=False)
     pd.DataFrame([{
         "Pointe (kW)": pmax,
-        "Énergie totale (kWh)": e_kwh,
-        "Énergie totale (MWh)": e_kwh/1000,
+        "Energie totale (kWh)": e_kwh,
+        "Energie totale (MWh)": e_kwh/1000,
         "Heures couvertes (h)": hours,
-        "Pas médian (min)": median_minutes,
+        "Pas median (min)": median_minutes,
         "Load factor (%)": load_factor_pct
     }]).to_excel(writer, sheet_name="KPI", index=False)
 
@@ -248,7 +250,9 @@ excel_buffer.seek(0)
 
 st.download_button(
     "📥 Télécharger la synthèse Excel",
-    data=excel_buffer.getvalue(),
+    data=excel_buffer,
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
+
