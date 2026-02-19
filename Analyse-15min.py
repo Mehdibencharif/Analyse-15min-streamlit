@@ -322,26 +322,36 @@ with right:
 
 st.divider()
 
-# Répartition des puissances (tranches 10 kW) (comme ton histogramme)
 st.subheader("Répartition des puissances (tranches de 10 kW)")
-bins = list(range(0, int(max(710, np.ceil(pmax/10)*10)) + 10, 10))
-labels = [f"{bins[i]}-{bins[i+1]} kW" for i in range(len(bins)-1)]
-df_tmp = df_final.copy()
-df_tmp["Classe puissance"] = pd.cut(df_tmp["Puissance réelle (kW)"], bins=bins, labels=labels, right=False)
-repartition = df_tmp["Classe puissance"].value_counts(normalize=True).sort_index() * 100
-df_repartition = repartition.reset_index()
-df_repartition.columns = ["Classe puissance", "Pourcentage (%)"]
+
+# largeur de classe
+bin_width = 10
+
+# bornes propres
+pmin = float(df_final["Puissance réelle (kW)"].min())
+pmax = float(df_final["Puissance réelle (kW)"].max())
+start = max(0, int(np.floor(pmin / bin_width) * bin_width))
+end = int(np.ceil(pmax / bin_width) * bin_width) + bin_width
+bins = np.arange(start, end + bin_width, bin_width)
+
+values = df_final["Puissance réelle (kW)"].dropna().values
 
 fig3, ax = plt.subplots(figsize=(14, 5))
-ax.bar(df_repartition["Classe puissance"].astype(str), df_repartition["Pourcentage (%)"])
+ax.hist(values, bins=bins, weights=np.ones_like(values) * 100 / len(values), rwidth=0.9)
+
 ax.set_title("Répartition des puissances (tranches de 10 kW)")
-ax.set_xlabel("Classe de puissance (kW)")
+ax.set_xlabel("Puissance (kW)")
 ax.set_ylabel("Pourcentage de temps (%)")
-ax.tick_params(axis="x", rotation=90)
 ax.grid(True, axis="y", alpha=0.3)
+
+# ✅ ticks propres : un tick chaque 100 kW (ajuste si tu veux)
+tick_step = 100
+ax.set_xticks(np.arange(start, end + 1, tick_step))
 plt.tight_layout()
+
 st.pyplot(fig3)
 save_fig_to_buffer(fig3, "03_Repartition_puissance_10kW")
+
 
 # Puissance max mensuelle (comme ton 3e graph)
 st.subheader("Puissances maximales mensuelles")
@@ -410,3 +420,4 @@ st.download_button(
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
