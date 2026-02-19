@@ -241,9 +241,7 @@ hours = float(df_final["delta_h"].sum())
 e_kwh = float(df_final["kWh"].sum())
 
 # ✅ KPI CORRIGÉ (comme ta logique palier)
-with c5:
-    st.metric("FACTEUR D’UTILISATION (comme script)", f"{fu_global_script_like:,.1f} %"
-
+st.metric("FACTEUR D’UTILISATION (mean)", f"{fu_global_simple_mean:,.1f} %")
 st.success(f"✅ Données prêtes — lignes: {len(df_final):,} | pas médian: {median_minutes:.2f} min | palier: {palier} kW")
 
 # =========================
@@ -464,6 +462,7 @@ st.download_button(
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
 
 
 
