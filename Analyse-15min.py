@@ -451,7 +451,7 @@ with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         "Energie totale (MWh)": e_kwh / 1000,
         "Heures couvertes (h)": hours,
         "Pas median (min)": median_minutes,
-        "FU global au palier (%)": fu_global_pct,
+        "FU (comme script) (%)": fu_global_script_like,
     }])
     kpi_df.to_excel(writer, sheet_name="KPI", index=False)
 
@@ -478,6 +478,7 @@ st.download_button(
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
 
 
 
