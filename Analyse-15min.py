@@ -251,21 +251,29 @@ st.success(
     f"✅ Données prêtes — lignes: {len(df_final):,} | pas médian: {median_minutes:.2f} min | palier: {palier} kW"
 )
 
-
 # =========================
 # DASHBOARD
 # =========================
 c1, c2, c3, c4, c5 = st.columns(5)
+
 with c1:
     st.metric("APPEL DE POINTE (mesuré)", f"{pmax:,.1f} kW")
+
 with c2:
     st.metric("PALIER (kW)", f"{palier:,.0f} kW")
+
 with c3:
     st.metric("ÉNERGIE TOTALE", f"{e_kwh/1000:,.1f} MWh")
+
 with c4:
     st.metric("HEURES COUVERTES", f"{hours:,.0f} h")
+
 with c5:
-    st.metric("FACTEUR D’UTILISATION (global au palier)", f"{fu_global_pct:,.1f} %")
+    # ✅ même logique que ton script (recommandé)
+    st.metric("FACTEUR D’UTILISATION (comme script)", f"{fu_global_script_like:,.1f} %")
+    # Si tu veux EXACTEMENT le mean du script, utilise plutôt :
+    # st.metric("FACTEUR D’UTILISATION (mean)", f"{fu_global_simple_mean:,.1f} %")
+
 
 # =========================
 # TABLEAU MENSUEL (comme ton bloc 2)
@@ -470,6 +478,7 @@ st.download_button(
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
 
 
 
