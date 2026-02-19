@@ -275,9 +275,11 @@ def save_fig_to_buffer(fig, key: str):
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
     buf.seek(0)
     fig_buffers[key] = buf
+    plt.close(fig)  # évite l'accumulation mémoire
 
 left, right = st.columns(2)
 
+# --- Graph 1 : facturée vs consommée (mensuel)
 with left:
     st.subheader("Évolution mensuelle : puissance facturée vs consommée")
     if mon.empty:
@@ -286,11 +288,9 @@ with left:
         df_plot = mon.copy()
         df_plot.index = df_plot.index.strftime("%Y-%m")
 
-        # Ici, j’utilise P max mois comme "facturée" (proxy)
-        # et P moy mois comme "consommée" (proxy), comme dans tes graphs.
         fig1, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(df_plot.index, df_plot["P max mois"], marker="o", label="Puissance facturée")
-        ax.plot(df_plot.index, df_plot["P moy mois"], marker="o", label="Puissance consommée")
+        ax.plot(df_plot.index, df_plot["P max mois"], marker="o", label="Puissance facturée (P max)")
+        ax.plot(df_plot.index, df_plot["P moy mois"], marker="o", label="Puissance consommée (P moy)")
         ax.set_title("Évolution mensuelle de la puissance facturée vs consommée")
         ax.set_xlabel("Mois")
         ax.set_ylabel("Puissance (kW)")
@@ -301,10 +301,12 @@ with left:
         st.pyplot(fig1)
         save_fig_to_buffer(fig1, "01_Puissance_facturee_vs_consommee")
 
+# --- Graph 2 : profil horaire
 with right:
     st.subheader("Profil horaire moyen (si données ~15 min)")
     if not (10 <= median_minutes <= 20):
         st.info("⚠️ Le profil horaire est fiable seulement si tes données sont vraiment en 15 minutes.")
+
     tmp = df_final.copy()
     tmp["Heure"] = tmp.index.hour
     hour_profile = tmp.groupby("Heure")["Puissance réelle (kW)"].mean()
@@ -322,38 +324,69 @@ with right:
 
 st.divider()
 
+# =========================
+# Répartition des puissances (graph propre + tables Excel)
+# =========================
 st.subheader("Répartition des puissances (tranches de 10 kW)")
 
-# largeur de classe
 bin_width = 10
-
-# bornes propres
-pmin = float(df_final["Puissance réelle (kW)"].min())
-pmax = float(df_final["Puissance réelle (kW)"].max())
-start = max(0, int(np.floor(pmin / bin_width) * bin_width))
-end = int(np.ceil(pmax / bin_width) * bin_width) + bin_width
-bins = np.arange(start, end + bin_width, bin_width)
+pmax_local = float(df_final["Puissance réelle (kW)"].max())
+end = int(np.ceil(pmax_local / bin_width) * bin_width) + bin_width
+bins = np.arange(0, end + bin_width, bin_width)
 
 values = df_final["Puissance réelle (kW)"].dropna().values
 
+# --- Graph 3 : histogramme lisible (% du temps)
 fig3, ax = plt.subplots(figsize=(14, 5))
-ax.hist(values, bins=bins, weights=np.ones_like(values) * 100 / len(values), rwidth=0.9)
-
+ax.hist(
+    values,
+    bins=bins,
+    weights=np.ones_like(values) * 100.0 / len(values),
+    rwidth=0.9
+)
 ax.set_title("Répartition des puissances (tranches de 10 kW)")
 ax.set_xlabel("Puissance (kW)")
 ax.set_ylabel("Pourcentage de temps (%)")
 ax.grid(True, axis="y", alpha=0.3)
 
-# ✅ ticks propres : un tick chaque 100 kW (ajuste si tu veux)
 tick_step = 100
-ax.set_xticks(np.arange(start, end + 1, tick_step))
-plt.tight_layout()
+ax.set_xticks(np.arange(0, end + 1, tick_step))
 
+plt.tight_layout()
 st.pyplot(fig3)
 save_fig_to_buffer(fig3, "03_Repartition_puissance_10kW")
 
+# --- Table 10 kW (détaillée) pour Excel (TOUJOURS définie)
+df_tmp = df_final.copy()
+df_tmp["Classe 10kW"] = pd.cut(
+    df_tmp["Puissance réelle (kW)"],
+    bins=bins,
+    right=False,
+    include_lowest=True
+)
+rep10 = df_tmp["Classe 10kW"].value_counts(normalize=True).sort_index() * 100
+df_repartition = rep10.reset_index()
+df_repartition.columns = ["Classe puissance (10 kW)", "Pourcentage (%)"]
 
-# Puissance max mensuelle (comme ton 3e graph)
+# --- Table 50 kW (lisible) pour Excel
+bin_width_excel = 50
+end_e = int(np.ceil(pmax_local / bin_width_excel) * bin_width_excel) + bin_width_excel
+bins_e = np.arange(0, end_e + bin_width_excel, bin_width_excel)
+
+df_tmp2 = df_final.copy()
+df_tmp2["Classe 50kW"] = pd.cut(
+    df_tmp2["Puissance réelle (kW)"],
+    bins=bins_e,
+    right=False,
+    include_lowest=True
+)
+rep50 = df_tmp2["Classe 50kW"].value_counts(normalize=True).sort_index() * 100
+df_repartition_50 = rep50.reset_index()
+df_repartition_50.columns = ["Classe puissance (50 kW)", "Pourcentage (%)"]
+
+# =========================
+# Puissance max mensuelle
+# =========================
 st.subheader("Puissances maximales mensuelles")
 if mon.empty:
     st.info("Pas de données mensuelles.")
@@ -384,6 +417,7 @@ with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
     df_final.reset_index().to_excel(writer, sheet_name="Donnees_nettoyees", index=False)
     mon.reset_index().to_excel(writer, sheet_name="Stats_Mois", index=False)
     df_repartition.to_excel(writer, sheet_name="Repartition_10kW", index=False)
+    df_repartition_50.to_excel(writer, sheet_name="Repartition_50kW", index=False)
 
     kpi_df = pd.DataFrame([{
         "Palier (kW)": palier,
@@ -409,8 +443,7 @@ with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         img.anchor = f"A{row}"
         ws.add_image(img)
 
-        # espace vertical (ajuste si tes images se chevauchent)
-        row += 28
+        row += 28  # espace vertical entre images
 
 excel_buffer.seek(0)
 
@@ -420,4 +453,7 @@ st.download_button(
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
+
+
 
