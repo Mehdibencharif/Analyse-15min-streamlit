@@ -222,6 +222,16 @@ df_final = add_kwh(df_final)
 # palier + FU
 df_final, palier = add_palier_and_fu(df_final)
 
+# ===== Facteur d'utilisation global (même logique que ton script) =====
+# Version A (recommandée) : moyenne pondérée par le temps (delta_h)
+fu_global_script_like = (
+    (df_final["Facteur d'utilisation (%)"] * df_final["delta_h"]).sum()
+    / df_final["delta_h"].sum()
+)
+
+# Version B (copie exacte du .mean() de ton script, moins rigoureux)
+fu_global_simple_mean = df_final["Facteur d'utilisation (%)"].mean()
+
 # pas médian
 median_minutes = median_timestep_minutes(df_final.index)
 
@@ -231,7 +241,8 @@ hours = float(df_final["delta_h"].sum())
 e_kwh = float(df_final["kWh"].sum())
 
 # ✅ KPI CORRIGÉ (comme ta logique palier)
-fu_global_pct = (e_kwh / (palier * hours) * 100) if (palier > 0 and hours > 0) else np.nan
+with c5:
+    st.metric("FACTEUR D’UTILISATION (comme script)", f"{fu_global_script_like:,.1f} %"
 
 st.success(f"✅ Données prêtes — lignes: {len(df_final):,} | pas médian: {median_minutes:.2f} min | palier: {palier} kW")
 
@@ -453,6 +464,7 @@ st.download_button(
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
 
 
 
