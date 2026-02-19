@@ -6,6 +6,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
+from openpyxl.drawing.image import Image as XLImage
+
 # =========================
 # CONFIG PAGE
 # =========================
@@ -13,7 +15,7 @@ st.set_page_config(layout="wide")
 st.title("🔎 Analyse Hydro-Québec — 15 min / Jour (Upload)")
 
 # =========================
-# HELPERS
+# HELPERS (nettoyage)
 # =========================
 def norm_col(s: str) -> str:
     s = str(s).strip()
@@ -30,7 +32,7 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
 def detect_columns(df: pd.DataFrame):
     cols = list(df.columns)
 
-    # Date
+    # --- Date
     date_candidates = []
     for c in cols:
         cn = norm_col(c)
@@ -46,7 +48,7 @@ def detect_columns(df: pd.DataFrame):
     if date_col is None and date_candidates:
         date_col = date_candidates[0]
 
-    # Puissance kW
+    # --- Puissance kW
     power_col = None
     power_candidates = []
     for c in cols:
@@ -63,6 +65,7 @@ def detect_columns(df: pd.DataFrame):
         power_col = power_candidates[0]
 
     if power_col is None:
+        # fallback : première colonne contenant "kw"
         for c in cols:
             if "kw" in norm_col(c):
                 power_col = c
@@ -74,25 +77,84 @@ def clean_uploaded(df: pd.DataFrame, date_col: str, power_col: str) -> pd.DataFr
     d = df[[date_col, power_col]].copy()
     d.rename(columns={date_col: "Date et heure", power_col: "Puissance réelle (kW)"}, inplace=True)
 
+    # Nettoyage puissance (virgules -> points, enlève espaces)
     d["Puissance réelle (kW)"] = (
         d["Puissance réelle (kW)"].astype(str)
         .str.replace(" ", "", regex=False)
         .str.replace(",", ".", regex=False)
     )
     d["Puissance réelle (kW)"] = pd.to_numeric(d["Puissance réelle (kW)"], errors="coerce")
+
+    # Date
     d["Date et heure"] = pd.to_datetime(d["Date et heure"], errors="coerce")
 
+    # Drop NA
     d = d.dropna(subset=["Date et heure", "Puissance réelle (kW)"])
+
+    # Doublons timestamp
     d = d.drop_duplicates(subset=["Date et heure"]).sort_values("Date et heure")
+
+    # Index temps
     d = d.set_index("Date et heure")
     return d
 
+# =========================
+# HELPERS (énergie + palier + FU)
+# =========================
 def add_kwh(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcule delta_h entre timestamps et kWh = kW * delta_h.
+    IMPORTANT: si tes données sont à 15 minutes, delta_h ~ 0.25.
+    """
     d = df.sort_index().copy()
-    delta_h = d.index.to_series().diff().dt.total_seconds().div(3600).fillna(0)
+    delta_h = d.index.to_series().diff().dt.total_seconds().div(3600)
+    delta_h = delta_h.fillna(0)
+
+    # si jamais un intervalle négatif ou zéro (rare), on clip à 0
+    delta_h = delta_h.clip(lower=0)
+
     d["delta_h"] = delta_h
     d["kWh"] = d["Puissance réelle (kW)"] * d["delta_h"]
     return d
+
+def compute_palier(puissance_max: float) -> int:
+    """
+    Même logique que ton script:
+    <=500 -> 500
+    <=700 -> 700
+    <=1000 -> 1000
+    sinon palier arrondi au 100 supérieur
+    """
+    if puissance_max <= 500:
+        return 500
+    elif puissance_max <= 700:
+        return 700
+    elif puissance_max <= 1000:
+        return 1000
+    else:
+        return (int(puissance_max // 100) + 1) * 100
+
+def add_palier_and_fu(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """
+    Ajoute:
+    - Palier (kW)
+    - Écart au palier (kW) = max(palier - P, 0)
+    - Facteur d'utilisation (%) = P/palier*100
+    """
+    d = df.copy()
+    pmax_local = float(d["Puissance réelle (kW)"].max())
+    palier = compute_palier(pmax_local)
+
+    d["Palier (kW)"] = palier
+    d["Écart au palier (kW)"] = (palier - d["Puissance réelle (kW)"]).clip(lower=0)
+    d["Facteur d'utilisation (%)"] = (d["Puissance réelle (kW)"] / palier) * 100
+    return d, palier
+
+def median_timestep_minutes(index: pd.DatetimeIndex) -> float:
+    deltas = index.to_series().diff().dropna()
+    if deltas.empty:
+        return float("nan")
+    return float(deltas.median().total_seconds() / 60)
 
 # =========================
 # UPLOAD
@@ -146,105 +208,199 @@ if rejected:
         st.write(f"- {name} → {reason}")
 
 if not cleaned_list:
-    st.error("⛔ Aucun fichier valide après nettoyage. Tes colonnes date/kW ne matchent pas ou les valeurs sont illisibles.")
+    st.error("⛔ Aucun fichier valide après nettoyage.")
     st.stop()
 
 # =========================
-# CONCAT
+# CONCAT + CALCULS
 # =========================
 df_final = pd.concat(cleaned_list).sort_index()
+
+# kWh
 df_final = add_kwh(df_final)
 
-# Pas de temps médian
-deltas = df_final.index.to_series().diff().dropna()
-median_minutes = deltas.median().total_seconds() / 60 if not deltas.empty else np.nan
+# palier + FU
+df_final, palier = add_palier_and_fu(df_final)
+
+# pas médian
+median_minutes = median_timestep_minutes(df_final.index)
 
 # KPI
 pmax = float(df_final["Puissance réelle (kW)"].max())
 hours = float(df_final["delta_h"].sum())
 e_kwh = float(df_final["kWh"].sum())
-load_factor_pct = (e_kwh / (pmax * hours) * 100) if (pmax > 0 and hours > 0) else np.nan
 
-st.success(f"✅ Données prêtes — lignes: {len(df_final):,} | pas médian: {median_minutes:.2f} min")
+# ✅ KPI CORRIGÉ (comme ta logique palier)
+fu_global_pct = (e_kwh / (palier * hours) * 100) if (palier > 0 and hours > 0) else np.nan
+
+st.success(f"✅ Données prêtes — lignes: {len(df_final):,} | pas médian: {median_minutes:.2f} min | palier: {palier} kW")
 
 # =========================
 # DASHBOARD
 # =========================
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 with c1:
-    st.metric("APPEL DE POINTE", f"{pmax:,.1f} kW")
+    st.metric("APPEL DE POINTE (mesuré)", f"{pmax:,.1f} kW")
 with c2:
-    st.metric("ÉNERGIE TOTALE", f"{e_kwh/1000:,.1f} MWh")
+    st.metric("PALIER (kW)", f"{palier:,.0f} kW")
 with c3:
-    st.metric("HEURES COUVERTES", f"{hours:,.0f} h")
+    st.metric("ÉNERGIE TOTALE", f"{e_kwh/1000:,.1f} MWh")
 with c4:
-    st.metric("FACTEUR D’UTILISATION (Load Factor)", f"{load_factor_pct:,.1f} %")
+    st.metric("HEURES COUVERTES", f"{hours:,.0f} h")
+with c5:
+    st.metric("FACTEUR D’UTILISATION (global au palier)", f"{fu_global_pct:,.1f} %")
 
 # =========================
-# GRAPHIQUES
+# TABLEAU MENSUEL (comme ton bloc 2)
 # =========================
+mon = pd.DataFrame({
+    "Energie_kWh": df_final["kWh"].resample("ME").sum(),
+    "P max mois": df_final["Puissance réelle (kW)"].resample("ME").max(),
+    "P moy mois": df_final["Puissance réelle (kW)"].resample("ME").mean(),
+    "FU moy mois (%)": df_final["Facteur d'utilisation (%)"].resample("ME").mean(),
+}).dropna()
+
+# FU global mensuel (ta formule script bloc 2)
+# Énergie / (Pmax_mois * 24 * jours_du_mois) * 100
+if not mon.empty:
+    mon["FU global mois (%)"] = (mon["Energie_kWh"] / (mon["P max mois"] * 24 * mon.index.daysinmonth)) * 100
+
+# =========================
+# GRAPHIQUES + BUFFERS (pour Excel)
+# =========================
+fig_buffers = {}
+
+def save_fig_to_buffer(fig, key: str):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+    buf.seek(0)
+    fig_buffers[key] = buf
+
 left, right = st.columns(2)
 
 with left:
-    st.subheader("Consommation & pointe par mois")
-    mon = pd.DataFrame({
-        "Energie_kWh": df_final["kWh"].resample("ME").sum(),
-        "Appel_kW": df_final["Puissance réelle (kW)"].resample("ME").max()
-    }).dropna()
+    st.subheader("Évolution mensuelle : puissance facturée vs consommée")
     if mon.empty:
         st.info("Pas assez de données pour une vue mensuelle.")
     else:
-        mon_plot = mon.copy()
-        mon_plot.index = mon_plot.index.strftime("%Y-%m")
+        df_plot = mon.copy()
+        df_plot.index = df_plot.index.strftime("%Y-%m")
 
-        fig, ax1 = plt.subplots(figsize=(10, 5))
-        ax1.bar(mon_plot.index, mon_plot["Energie_kWh"])
-        ax1.set_ylabel("Énergie (kWh)")
-        ax1.tick_params(axis="x", rotation=45)
-        ax1.grid(True, axis="y", alpha=0.3)
-
-        ax2 = ax1.twinx()
-        ax2.plot(mon_plot.index, mon_plot["Appel_kW"], marker="o")
-        ax2.set_ylabel("Appel (kW)")
-
+        # Ici, j’utilise P max mois comme "facturée" (proxy)
+        # et P moy mois comme "consommée" (proxy), comme dans tes graphs.
+        fig1, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(df_plot.index, df_plot["P max mois"], marker="o", label="Puissance facturée")
+        ax.plot(df_plot.index, df_plot["P moy mois"], marker="o", label="Puissance consommée")
+        ax.set_title("Évolution mensuelle de la puissance facturée vs consommée")
+        ax.set_xlabel("Mois")
+        ax.set_ylabel("Puissance (kW)")
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(axis="x", rotation=45)
+        ax.legend()
         plt.tight_layout()
-        st.pyplot(fig)
+        st.pyplot(fig1)
+        save_fig_to_buffer(fig1, "01_Puissance_facturee_vs_consommee")
 
 with right:
-    st.subheader("Profil horaire moyen (si 15 min)")
+    st.subheader("Profil horaire moyen (si données ~15 min)")
     if not (10 <= median_minutes <= 20):
-        st.info("Le profil horaire moyen est fiable seulement si tes données sont vraiment en 15 minutes.")
+        st.info("⚠️ Le profil horaire est fiable seulement si tes données sont vraiment en 15 minutes.")
     tmp = df_final.copy()
     tmp["Heure"] = tmp.index.hour
     hour_profile = tmp.groupby("Heure")["Puissance réelle (kW)"].mean()
 
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig2, ax = plt.subplots(figsize=(10, 5))
     ax.plot(hour_profile.index, hour_profile.values, marker="o")
+    ax.set_title("Profil horaire moyen")
     ax.set_xlabel("Heure")
     ax.set_ylabel("Puissance (kW)")
     ax.set_xticks(range(0, 24))
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    st.pyplot(fig)
+    st.pyplot(fig2)
+    save_fig_to_buffer(fig2, "02_Profil_horaire_moyen")
+
+st.divider()
+
+# Répartition des puissances (tranches 10 kW) (comme ton histogramme)
+st.subheader("Répartition des puissances (tranches de 10 kW)")
+bins = list(range(0, int(max(710, np.ceil(pmax/10)*10)) + 10, 10))
+labels = [f"{bins[i]}-{bins[i+1]} kW" for i in range(len(bins)-1)]
+df_tmp = df_final.copy()
+df_tmp["Classe puissance"] = pd.cut(df_tmp["Puissance réelle (kW)"], bins=bins, labels=labels, right=False)
+repartition = df_tmp["Classe puissance"].value_counts(normalize=True).sort_index() * 100
+df_repartition = repartition.reset_index()
+df_repartition.columns = ["Classe puissance", "Pourcentage (%)"]
+
+fig3, ax = plt.subplots(figsize=(14, 5))
+ax.bar(df_repartition["Classe puissance"].astype(str), df_repartition["Pourcentage (%)"])
+ax.set_title("Répartition des puissances (tranches de 10 kW)")
+ax.set_xlabel("Classe de puissance (kW)")
+ax.set_ylabel("Pourcentage de temps (%)")
+ax.tick_params(axis="x", rotation=90)
+ax.grid(True, axis="y", alpha=0.3)
+plt.tight_layout()
+st.pyplot(fig3)
+save_fig_to_buffer(fig3, "03_Repartition_puissance_10kW")
+
+# Puissance max mensuelle (comme ton 3e graph)
+st.subheader("Puissances maximales mensuelles")
+if mon.empty:
+    st.info("Pas de données mensuelles.")
+else:
+    df_plot2 = mon.copy()
+    df_plot2.index = df_plot2.index.strftime("%Y-%m")
+
+    fig4, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(df_plot2.index, df_plot2["P max mois"], marker="o")
+    ax.set_title("Puissances maximales mensuelles")
+    ax.set_xlabel("Mois")
+    ax.set_ylabel("Puissance max (kW)")
+    ax.grid(True, alpha=0.3)
+    ax.tick_params(axis="x", rotation=45)
+    plt.tight_layout()
+    st.pyplot(fig4)
+    save_fig_to_buffer(fig4, "04_Puissance_max_mensuelle")
 
 # =========================
-# EXPORT EXCEL (openpyxl)
+# EXPORT EXCEL (avec images)
 # =========================
-st.subheader("⬇️ Export Excel")
+st.subheader("⬇️ Export Excel (tableaux + graphiques)")
 
 excel_buffer = io.BytesIO()
 
 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+    # Sheets data
     df_final.reset_index().to_excel(writer, sheet_name="Donnees_nettoyees", index=False)
     mon.reset_index().to_excel(writer, sheet_name="Stats_Mois", index=False)
-    pd.DataFrame([{
-        "Pointe (kW)": pmax,
+    df_repartition.to_excel(writer, sheet_name="Repartition_10kW", index=False)
+
+    kpi_df = pd.DataFrame([{
+        "Palier (kW)": palier,
+        "Pointe mesurée (kW)": pmax,
         "Energie totale (kWh)": e_kwh,
-        "Energie totale (MWh)": e_kwh/1000,
+        "Energie totale (MWh)": e_kwh / 1000,
         "Heures couvertes (h)": hours,
         "Pas median (min)": median_minutes,
-        "Load factor (%)": load_factor_pct
-    }]).to_excel(writer, sheet_name="KPI", index=False)
+        "FU global au palier (%)": fu_global_pct,
+    }])
+    kpi_df.to_excel(writer, sheet_name="KPI", index=False)
+
+    # Add "Graphiques" sheet + images
+    wb = writer.book
+    ws = wb.create_sheet("Graphiques")
+
+    row = 1
+    for title, buf in fig_buffers.items():
+        ws.cell(row=row, column=1, value=title)
+        row += 1
+
+        img = XLImage(buf)
+        img.anchor = f"A{row}"
+        ws.add_image(img)
+
+        # espace vertical (ajuste si tes images se chevauchent)
+        row += 28
 
 excel_buffer.seek(0)
 
@@ -254,5 +410,3 @@ st.download_button(
     file_name="Synthese_Hydro.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-
-
